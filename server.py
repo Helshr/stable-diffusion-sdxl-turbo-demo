@@ -39,10 +39,41 @@ pipe.to("cuda")
 pipe.enable_xformers_memory_efficient_attention()
 
 
+# 队列用于存储生成好的图片路径
+image_queue = Queue()
+
+
+def generate_and_save_image(prompt, steps, remote_dir):
+    images = pipe(prompt=prompt, num_inference_steps=steps, strength=1, guidance_scale=0.0).images
+    os.makedirs(r"stable-diffusion-xl-turbo/outputs", exist_ok=True)
+    gc.collect()
+    torch.cuda.empty_cache()
+    for i, image in enumerate(images):
+        timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        filename = f"{timestamp}_{i}.png"
+        print("start save image: ", datetime.now())
+        local_path = f"/workspace/code/stable-diffusion-sdxl-turbo-demo/stable-diffusion-sdxl-turbo-demo/outputs/{filename}"
+        print("end save image: ", datetime.now())
+        image.resize((512, 512))
+        image.save(local_path, format="JEPG", quality=85)
+        oss_file_path = f"{remote_dir}{filename}"
+        image_queue.put((oss_file_path, local_path))
+
+
 def save_to_oss(remote_path, local_img_path):
     oss = MyAliyun()
     oss.web_insert_aliyun_file(remote_path, local_img_path)
     print("Image saved to: ", remote_path)
+
+
+def upload_to_oss():
+    while True:
+        oss_file_path, local_path = image_queue.get()
+        save_to_oss(oss_file_path, local_path)
+        image_url = f"https://pailaimi-static.oss-cn-chengdu.aliyuncs.com/{oss_file_path}"
+        images_url_list.append(image_url)
+        os.remove(local_path)
+        image_queue.task_done()
 
 
 class Item(BaseModel):
@@ -65,29 +96,57 @@ def infer(item: Item):
     steps = 1
     refiner_strength =0.3
     print("propmt: ", prompt)
-    print("negative: ", negative)
     print("num_images: ", num_images)
-    prompt, negative = [prompt] * samples, [negative] * samples
+    #prompt = "A cinematic shot of a baby racoon wearing an intricate italian priest robe."
+    prompt = "in a toy factory, Christmas, several elves making gifts with magic, reindeer standing aroud snowing,Make sure the face is not deformed"
     images_url_list = []
     for i in range(0, num_images):
-        images = pipe(prompt=prompt, guidance_scale=scale, num_inference_steps=steps).images
-        os.makedirs(r"stable-diffusion-xl-turbo/outputs", exist_ok=True)
+        images = pipe(prompt=prompt, num_inference_steps=20, strength=1, guidance_scale=0.0).images
+        os.makedirs(r"stable-diffusion-sdxl-turbo/outputs", exist_ok=True)
+        print("gc start: ", datetime.now())
         gc.collect()
         torch.cuda.empty_cache()
+        print("gc end: ", datetime.now())
         for i, image in enumerate(images):
-            buffered = BytesIO()
             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-            filename = f"{timestamp}_{i}.png"
+            filename = f"{timestamp}_{i}.jpg"
             print("start save image: ", datetime.now())
-            local_path = f"/workspace/code/stable-diffusion-sdxl-turbo-demo/stable-diffusion-sdxl-turbo-demo/outputs/{filename}"
+            local_path = f"/workspace/code/stable-diffusion-sdxl-turbo-demo/stable-diffusion-sdxl-turbo/outputs/{filename}"
             print("end save image: ", datetime.now())
-            image.save(local_path, format="PNG")
-            new_image = Image.open(local_path)
-            new_image = new_image.resize((512, 512))
-            new_image.save(local_path)
+            image.resize((512, 512))
+            image.save(local_path, format="JPEG", quality=50)
+            #new_image = Image.open(local_path)
+            #new_image = new_image.resize((512, 512))
+            #new_image.save(local_path)
             oss_file_path = f"{remote_dir}{filename}"
+            print("start save oss: ", datetime.now())
             save_to_oss(oss_file_path, local_path)
+            print("end save oss: ", datetime.now())
             image_url = f"https://pailaimi-static.oss-cn-chengdu.aliyuncs.com/{oss_file_path}"
             images_url_list.append(image_url)
-            os.remove(local_path)
+           # os.remove(local_path)
     return images_url_list
+
+
+
+@app.post("/generate_and_upload")
+async def generate_and_upload(item: Item):
+    # 启动线程生成和保存图片
+    remote_dir, prompt, steps = item.remote_dir, item.prompt, item.num_images
+    generate_thread = Thread(target=generate_and_save_image, args=(prompt, steps, remote_dir))
+    generate_thread.start()
+    generate_thread.join()
+    # 返回成功的响应
+    return {"message": "Image generation and upload initiated"}
+
+
+# 设置线程数量，根据需要调整
+num_threads = 2
+
+# 创建并启动上传线程
+upload_threads = []
+for _ in range(num_threads):
+    thread = Thread(target=upload_to_oss)
+    thread.daemon = True
+    thread.start()
+    upload_threads.append(thread)
