@@ -6,6 +6,7 @@ from diffusers import DiffusionPipeline, StableDiffusionXLPipeline
 from diffusers import AutoPipelineForText2Image
 import torch
 from io import BytesIO
+from queue import Queue
 import os
 import gc
 from datetime import datetime
