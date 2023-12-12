@@ -46,10 +46,13 @@ image_queue = Queue()
 
 
 def generate_and_save_image(prompt, steps, remote_dir):
+    print("here...")
     images = pipe(prompt=prompt, num_inference_steps=steps, strength=1, guidance_scale=0.0).images
     os.makedirs(r"stable-diffusion-xl-turbo/outputs", exist_ok=True)
+    print("start gc: ", datetime.now())
     gc.collect()
     torch.cuda.empty_cache()
+    print("end gc: ", datetime.now())
     for i, image in enumerate(images):
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         filename = f"{timestamp}_{i}.png"
@@ -135,6 +138,7 @@ def infer(item: Item):
 async def generate_and_upload(item: Item):
     # 启动线程生成和保存图片
     remote_dir, prompt, steps = item.remote_dir, item.prompt, item.num_images
+    print("prompt: ", prompt)
     generate_thread = Thread(target=generate_and_save_image, args=(prompt, steps, remote_dir))
     generate_thread.start()
     generate_thread.join()
